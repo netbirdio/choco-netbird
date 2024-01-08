@@ -36,4 +36,4 @@ jobs:
       - name: test package
         uses: crazy-max/ghaction-chocolatey@v3
         with:
-          args: install netbird -dv -s .
+          args: install netbird-client -dv -s .
