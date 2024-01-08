@@ -1,0 +1,59 @@
+name: Automatically create PR on a new version
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 8 * * *'
+
+jobs:
+  check_update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get latest version
+        uses: rez0n/actions-github-release@main
+        id: netbird_release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: "netbirdio/netbird"
+          type: "stable"
+      - name: Trim v from the version
+        uses: mad9000/actions-find-and-replace-string@3
+        id: latest_netbird_release
+        with:
+          source: ${{ steps.netbird_release.outputs.release }}
+          find: 'v'
+          replace: ''
+      - name: Get version in the repo
+        id: get_current_version
+        uses: mavrosxristoforos/get-xml-info@1.2.1
+        with:
+          xml-file: 'netbird-client.nuspec'
+          xpath: "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='version']"
+      - name: Calculate SHA256
+        if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
+        run: |
+          URL=https://github.com/netbirdio/netbird/releases/download/v${{ steps.latest_netbird_release.outputs.value }}/netbird_installer_${{steps.latest_netbird_release.outputs.value }}_windows_amd64.msi
+          echo "WIN64SHA=$(curl -s ${URL} | sha256sum | cut -d' ' -f1)" >> $GITHUB_ENV
+      - name: Update chocolateyinstall.ps1 file
+        if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
+        run: |
+          sed -i "s|\$version .*|\$version = '${{ steps.latest_netbird_release.outputs.value }}'|g" tools/chocolateyinstall.ps1
+          sed -i "s/ checksum64 .*/ checksum64 = '${{ env.WIN64SHA }}'/g" tools/chocolateyinstall.ps1
+          sed -i "s|version>.*<|version>${{ steps.latest_netbird_release.outputs.value }}<|g" netbird-client.nuspec
+      # - name: Create Pull Request
+      #   if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
+      #   uses: peter-evans/create-pull-request@v5
+      #   with:
+      #     token: ${{ secrets.PAT }}
+      #     commit-message: Updating MySQL ODBC driver to ${{ steps.latest_netbird_release.outputs.value }}
+      #     committer: GitHub <noreply@github.com>
+      #     author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
+      #     signoff: false
+      #     base: master
+      #     branch: ${{ steps.latest_netbird_release.outputs.value }}
+      #     delete-branch: true
+      #     title: MySQL ODBC ${{ steps.latest_netbird_release.outputs.value }}
+      #     body: 'Updated MySQL ODBC driver to ${{ steps.latest_netbird_release.outputs.value }}'
+      #     labels: |
+      #       automated pr
