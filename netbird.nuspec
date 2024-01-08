@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>netbird-client</id>
+    <version>0.25.3</version>
+    <packageSourceUrl>https://github.com/bombergio/choco-netbird</packageSourceUrl>
+    <owners>bombergio</owners>
+    <title>Netbird Client</title>
+    <authors>Netbird</authors>
+    <projectUrl>https://netbird.io</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/bombergio/choco-netbird/netbird.png</iconUrl>
+    <copyright>2024 Netbird</copyright>
+    <licenseUrl>https://netbird.io/terms</licenseUrl>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <docsUrl>https://docs.netbird.io</docsUrl>
+    <bugTrackerUrl>https://github.com/netbirdio/netbird/issues</bugTrackerUrl>
+    <tags>netbird</tags>
+    <summary>Netbird client</summary>
+    <description>NetBird combines a configuration-free peer-to-peer private network and a centralized access control system in a single platform, making it easy to create secure private networks for your organization or home.</description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

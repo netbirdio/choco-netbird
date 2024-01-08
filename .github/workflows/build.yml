@@ -1,0 +1,39 @@
+name: Build and test package
+
+on:
+  push:
+    branches:
+      - "**"
+      #- '!master'
+    tags-ignore:
+      - "**"
+
+jobs:
+  package:
+    name: Package netbird client
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Choco pack
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: pack
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: netbird.*.nupkg
+  test:
+    name: Test netbird client
+    needs: package
+    runs-on: windows-latest
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: package
+      - name: test package
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install netbird -dv -s .
