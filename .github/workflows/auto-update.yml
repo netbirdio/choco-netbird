@@ -34,7 +34,7 @@ jobs:
         if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
         run: |
           URL=https://github.com/netbirdio/netbird/releases/download/v${{ steps.latest_netbird_release.outputs.value }}/netbird_installer_${{steps.latest_netbird_release.outputs.value }}_windows_amd64.msi
-          echo "WIN64SHA=$(curl -s ${URL} | sha256sum | cut -d' ' -f1)" >> $GITHUB_ENV
+          echo "WIN64SHA=$(curl -sL ${URL} | sha256sum | cut -d' ' -f1)" >> $GITHUB_ENV
       - name: Update chocolateyinstall.ps1 file
         if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
         run: |
