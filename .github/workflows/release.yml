@@ -1,4 +1,4 @@
-name: Build and release mysql.odbc package to Chocolatey
+name: Build and push NetBird package to Chocolatey
 
 on:
   pull_request:
