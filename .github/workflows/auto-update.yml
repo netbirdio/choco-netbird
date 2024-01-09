@@ -28,7 +28,7 @@ jobs:
         id: get_current_version
         uses: mavrosxristoforos/get-xml-info@1.2.1
         with:
-          xml-file: 'netbird-client.nuspec'
+          xml-file: 'netbird.nuspec'
           xpath: "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='version']"
       - name: Calculate SHA256
         if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
@@ -40,20 +40,20 @@ jobs:
         run: |
           sed -i "s|\$version .*|\$version = '${{ steps.latest_netbird_release.outputs.value }}'|g" tools/chocolateyinstall.ps1
           sed -i "s/ checksum64 .*/ checksum64 = '${{ env.WIN64SHA }}'/g" tools/chocolateyinstall.ps1
-          sed -i "s|version>.*<|version>${{ steps.latest_netbird_release.outputs.value }}<|g" netbird-client.nuspec
+          sed -i "s|version>.*<|version>${{ steps.latest_netbird_release.outputs.value }}<|g" netbird.nuspec
       - name: Create Pull Request
         if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.PAT }}
-          commit-message: Bumping Netbird client version to ${{ steps.latest_netbird_release.outputs.value }}
+          commit-message: Bumping NetBird version to ${{ steps.latest_netbird_release.outputs.value }}
           committer: GitHub <noreply@github.com>
           author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
           signoff: false
           base: main
           branch: ${{ steps.latest_netbird_release.outputs.value }}
           delete-branch: true
-          title: Netbird client ${{ steps.latest_netbird_release.outputs.value }}
-          body: 'Bumped Netbird client version to ${{ steps.latest_netbird_release.outputs.value }}'
+          title: NetBird ${{ steps.latest_netbird_release.outputs.value }}
+          body: 'Bumped NetBird version to ${{ steps.latest_netbird_release.outputs.value }}'
           labels: |
             auto-update

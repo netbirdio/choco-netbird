@@ -10,7 +10,7 @@ on:
 
 jobs:
   package:
-    name: Package netbird client
+    name: Package NetBird
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -23,9 +23,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: package
-          path: netbird-client.*.nupkg
+          path: netbird.*.nupkg
   test:
-    name: Test netbird client
+    name: Test NetBird
     needs: package
     runs-on: windows-latest
     steps:
@@ -36,4 +36,4 @@ jobs:
       - name: test package
         uses: crazy-max/ghaction-chocolatey@v3
         with:
-          args: install netbird-client -dv -s .
+          args: install netbird -dv -s .
