@@ -56,4 +56,9 @@ jobs:
           title: NetBird ${{ steps.latest_netbird_release.outputs.value }}
           body: 'Bumped NetBird version to ${{ steps.latest_netbird_release.outputs.value }}'
           labels: |
-            auto-update
+            automerge
+      - uses: reitermarkus/automerge@v2
+        with:
+          token: ${{ secrets.PAT }}
+          merge-method: rebase
+          required-labels: automerge
