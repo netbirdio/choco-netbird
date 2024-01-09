@@ -1,9 +1,10 @@
 name: Build and push NetBird package to Chocolatey
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
-      - master
+      - main
     types:
       - closed
 
