@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = 'Stop';
 $packageArgs = @{
   packageName   = $env:ChocolateyPackageName
-  softwareName  = 'netbird client *'
+  softwareName  = 'NetBird*'
   fileType      = 'msi'
   silentArgs    = "/qn"
   validExitCodes= @(0)

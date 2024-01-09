@@ -9,7 +9,7 @@ $packageArgs = @{
   fileType = 'msi'
   url64bit = $url64
 
-  softwareName = 'netbird client *'
+  softwareName = 'NetBird*'
 
   checksum64 = '3b102b2f82320dadca2424086d9d5548596b7b476246370af638707ff01446e7'
   checksumType64 = 'sha256'
