@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop';
 $toolsDir = "$(Split-Path -parent $MyInvocation.MyCommand.Definition)"
-$version = '0.28.9'
+$version = '0.29.0'
 $url64 = "https://github.com/netbirdio/netbird/releases/download/v${version}/netbird_installer_${version}_windows_amd64.msi"
 
 $packageArgs = @{
@@ -11,7 +11,7 @@ $packageArgs = @{
 
   softwareName = 'NetBird*'
 
-  checksum64 = 'c69c3033a9e67d62624aa9b45d0fa76513470fc7bf3437328526aa50f14da618'
+  checksum64 = 'd91e6cadb73c6b2b92fb0da5ba662f8051e23580d0f28dae2c77f1d280b655ea'
   checksumType64 = 'sha256'
 
   silentArgs = "/qn"
