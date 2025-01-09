@@ -1,0 +1,53 @@
+name: Update Chocolatey package version
+
+on:
+  repository_dispatch:
+    types: [new_netbird_version]
+
+jobs:
+  bump_version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Capture the dispatched version
+        id: set_version
+        run: |
+          if [ -z "${{ github.event.client_payload.version }}" ]; then
+            echo "No version specified in payload!"
+            exit 1
+          fi
+          echo "VERSION=${{ github.event.client_payload.version }}" >> $GITHUB_ENV
+
+      - name: Calculate SHA256 of the new MSI
+        run: |
+          URL="https://github.com/netbirdio/netbird/releases/download/v${{ env.VERSION }}/netbird_installer_${{ env.VERSION }}_windows_amd64.msi"
+          echo "WIN64SHA=$(curl -sL $URL | sha256sum | cut -d' ' -f1)" >> $GITHUB_ENV
+
+      - name: Update local files
+        run: |
+          sed -i "s|\$version .*|\$version = '${{ env.VERSION }}'|g" tools/chocolateyinstall.ps1
+          sed -i "s/ checksum64 .*/ checksum64 = '${{ env.WIN64SHA }}'/g" tools/chocolateyinstall.ps1
+          sed -i "s|version>.*<|version>${{ env.VERSION }}<|g" netbird.nuspec
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.PAT }}
+          commit-message: "Bumping NetBird version to ${{ env.VERSION }}"
+          committer: GitHub <noreply@github.com>
+          author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
+          signoff: false
+          base: main
+          branch: ${{ env.VERSION }}
+          delete-branch: true
+          title: "NetBird ${{ env.VERSION }}"
+          body: "Bumped NetBird version to ${{ env.VERSION }}"
+          labels: automerge
+
+      - name: Automerge Pull Request
+        uses: reitermarkus/automerge@v2
+        with:
+          token: ${{ secrets.PAT }}
+          required-labels: automerge

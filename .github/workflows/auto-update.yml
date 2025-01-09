@@ -1,8 +1,6 @@
 name: Automatically create PR on a new version
 
 on:
-  schedule:
-    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
