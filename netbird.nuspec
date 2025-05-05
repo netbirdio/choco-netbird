@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>netbird</id>
-    <version>0.43.1</version>
+    <version>0.43.2</version>
     <packageSourceUrl>https://github.com/bombergio/choco-netbird</packageSourceUrl>
     <owners>bombergio</owners>
     <title>NetBird</title>
