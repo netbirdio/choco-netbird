@@ -1,0 +1,78 @@
+name: Publish Netbird to Winget
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Netbird version to publish (e.g., 0.59.7)'
+        required: true
+        type: string
+
+jobs:
+  publish-winget:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up WingetCreate
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Determine version
+        id: version
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ github.event.inputs.version }}"
+          } else {
+            # Extract version from release tag (remove 'v' prefix if present)
+            $version = "${{ github.event.release.tag_name }}".TrimStart('v')
+          }
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Fetch release info
+        id: release_info
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            # For manual dispatch, fetch release info from GitHub API
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/netbirdio/netbird/releases/tags/v${{ env.VERSION }}"
+          } else {
+            # For release event, use the current release
+            $release = Invoke-RestMethod -Uri "${{ github.event.release.url }}"
+          }
+          
+          # Find MSI installer URL
+          $installerUrl = $release.assets | Where-Object { $_.name -like "*windows_amd64.msi" } | Select-Object -ExpandProperty browser_download_url
+          
+          if (-not $installerUrl) {
+            Write-Error "No MSI installer found for version ${{ env.VERSION }}"
+            exit 1
+          }
+          
+          echo "installer_url=$installerUrl" >> $env:GITHUB_OUTPUT
+          echo "release_notes=$($release.body)" >> $env:GITHUB_OUTPUT
+
+      - name: Update Winget Manifest
+        run: |
+          Write-Host "Updating Winget manifest for Netbird version ${{ env.VERSION }}"
+          Write-Host "Installer URL: ${{ steps.release_info.outputs.installer_url }}"
+          
+          # Use wingetcreate to update and submit the manifest
+          .\wingetcreate.exe update netbirdio.netbird `
+            --version ${{ env.VERSION }} `
+            --urls ${{ steps.release_info.outputs.installer_url }} `
+            --submit `
+            --token ${{ secrets.WINGET_PAT }} `
+            --description "NetBird is an open-source VPN management platform built on WireGuard® making it easy to create secure private networks for your organization."
+
+      - name: Verify submission
+        run: |
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
+          } else {
+            Write-Error "❌ Failed to submit Winget manifest update"
+            exit 1
+          }
