@@ -58,9 +58,7 @@ jobs:
           }
 
           $assets = $release.assets
-          if (-not $assets) {
-            throw "Release v${{ env.VERSION }} has no assets (is the tag correct and the build finished?)."
-          }
+          if (-not $assets) { throw "Release v${{ env.VERSION }} has no assets." }
 
           $msi_x64 = $assets | Where-Object { $_.name -like "*windows_amd64.msi" } | Select-Object -ExpandProperty browser_download_url -First 1
           $exe_x64 = $assets | Where-Object { $_.name -like "*windows_amd64.exe" } | Select-Object -ExpandProperty browser_download_url -First 1
@@ -68,9 +66,7 @@ jobs:
           $exe_arm = $assets | Where-Object { $_.name -like "*windows_arm64.exe" } | Select-Object -ExpandProperty browser_download_url -First 1
 
           $any = @($msi_x64, $exe_x64, $msi_arm, $exe_arm) | Where-Object { $_ }
-          if (-not $any -or $any.Count -eq 0) {
-            throw "No Windows installers (MSI/EXE) found in v${{ env.VERSION }}."
-          }
+          if (-not $any) { throw "No Windows installers (MSI/EXE) found in v${{ env.VERSION }}." }
 
           $qualified = @()
           if ($msi_x64) { $qualified += "$msi_x64|x64" }
@@ -82,46 +78,56 @@ jobs:
           "installer_urls_file=installer_urls.txt" >> $env:GITHUB_OUTPUT
           "installer_url=$($any[0])"               >> $env:GITHUB_OUTPUT
 
-          $notes = ($release.body ?? "") -replace "`r",""
-          $delimNotes = "EOF_$([Guid]::NewGuid().ToString('N'))"
-          Add-Content $env:GITHUB_OUTPUT "release_notes<<$delimNotes"
-          Add-Content $env:GITHUB_OUTPUT $notes
-          Add-Content $env:GITHUB_OUTPUT $delimNotes
-
+      # --- PAT-owner-based fork handling + sync ---
 
       - name: Install GitHub CLI
         shell: pwsh
         run: choco install gh -y
 
-      - name: Configure GH_TOKEN for gh CLI
+      - name: Authenticate gh with PAT and resolve PAT owner
+        id: whoami
         shell: pwsh
         env:
           WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          # Use PAT so 'gh' can create/sync fork
+          # Make PAT available to gh
           echo "GH_TOKEN=$env:WINGET_PAT" >> $env:GITHUB_ENV
 
-      - name: Ensure winget-pkgs fork exists (create if missing)
+          # Use REST to get the PAT owner's login (works for classic & fine-grained PATs)
+          $user = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:WINGET_PAT"; "User-Agent"="netbird-winget-action"; Accept="application/vnd.github+json" } -Uri "https://api.github.com/user"
+          if (-not $user.login) { throw "Could not determine PAT owner via /user" }
+          "FORK_OWNER=$($user.login)" >> $env:GITHUB_ENV
+          "login=$($user.login)"      >> $env:GITHUB_OUTPUT
+
+      - name: Ensure fork exists under PAT owner (create if missing)
         shell: pwsh
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
         run: |
-          $forkName = "${{ github.actor }}/winget-pkgs"
-          Write-Host "Checking for fork $forkName..."
-          $exists = (gh repo view $forkName) -ne $null
+          $fork = "${{ env.FORK_OWNER }}/winget-pkgs"
+          Write-Host "Checking for fork $fork ..."
+          $exists = $false
+          try {
+            gh repo view $fork --json name -q .name | Out-Null
+            $exists = $LASTEXITCODE -eq 0
+          } catch { $exists = $false }
+
           if (-not $exists) {
-            Write-Host "Fork not found; creating…"
-            gh repo fork microsoft/winget-pkgs --clone=false --remote=false
+            Write-Host "Fork not found; creating under ${{ env.FORK_OWNER }} ..."
+            # Create the fork via REST (equivalent to: POST /repos/microsoft/winget-pkgs/forks)
+            gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -f default_branch_only=true
           } else {
             Write-Host "Fork already exists."
           }
 
-      - name: Sync winget-pkgs fork with upstream (master)
+      - name: Sync PAT-owner fork with upstream (master)
         shell: pwsh
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
         run: |
-          gh repo sync "${{ github.actor }}/winget-pkgs" -b master --force
+          gh repo sync "${{ env.FORK_OWNER }}/winget-pkgs" -b master --force
+
+      # --- end fork handling ---
 
       - name: Update Winget Manifest
         shell: pwsh
@@ -129,8 +135,6 @@ jobs:
           WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
           Write-Host "Updating Winget manifest for Netbird ${{ env.VERSION }}"
-          Write-Host "Example installer: ${{ steps.release_info.outputs.installer_url }}"
-
           $urls = Get-Content "${{ steps.release_info.outputs.installer_urls_file }}" | Where-Object { $_.Trim() }
           if (-not $urls) { throw "No installer URLs to submit." }
 
