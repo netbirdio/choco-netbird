@@ -20,8 +20,7 @@ jobs:
 
       - name: Set up WingetCreate
         shell: pwsh
-        run: |
-          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
 
       - name: Determine version
         id: version
@@ -78,7 +77,7 @@ jobs:
           "installer_urls_file=installer_urls.txt" >> $env:GITHUB_OUTPUT
           "installer_url=$($any[0])"               >> $env:GITHUB_OUTPUT
 
-      # --- PAT-owner-based fork handling + sync ---
+      # ---------- Fork under PAT owner, then sync ----------
 
       - name: Install GitHub CLI
         shell: pwsh
@@ -90,32 +89,50 @@ jobs:
         env:
           WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          # Make PAT available to gh
           echo "GH_TOKEN=$env:WINGET_PAT" >> $env:GITHUB_ENV
 
-          # Use REST to get the PAT owner's login (works for classic & fine-grained PATs)
-          $user = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:WINGET_PAT"; "User-Agent"="netbird-winget-action"; Accept="application/vnd.github+json" } -Uri "https://api.github.com/user"
-          if (-not $user.login) { throw "Could not determine PAT owner via /user" }
-          "FORK_OWNER=$($user.login)" >> $env:GITHUB_ENV
-          "login=$($user.login)"      >> $env:GITHUB_OUTPUT
+          $u = gh api /user --jq "{login: .login, type: .type}"
+          if (-not $u) { throw "Could not determine PAT owner via /user" }
+          $obj = $u | ConvertFrom-Json
+          "FORK_OWNER=$($obj.login)" >> $env:GITHUB_ENV
+          "FORK_OWNER_TYPE=$($obj.type)" >> $env:GITHUB_ENV
+          Write-Host "PAT owner: $($obj.login) ($($obj.type))"
 
-      - name: Ensure fork exists under PAT owner (create if missing)
+      - name: Ensure fork exists (create if missing) under PAT owner
         shell: pwsh
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
         run: |
-          $fork = "${{ env.FORK_OWNER }}/winget-pkgs"
-          Write-Host "Checking for fork $fork ..."
+          $owner = "${{ env.FORK_OWNER }}"
+          $forkSlug = "$owner/winget-pkgs"
+
+          Write-Host "Checking for fork $forkSlug ..."
           $exists = $false
           try {
-            gh repo view $fork --json name -q .name | Out-Null
-            $exists = $LASTEXITCODE -eq 0
+            gh repo view $forkSlug --json name -q .name | Out-Null
+            if ($LASTEXITCODE -eq 0) { $exists = $true }
           } catch { $exists = $false }
 
           if (-not $exists) {
-            Write-Host "Fork not found; creating under ${{ env.FORK_OWNER }} ..."
-            # Create the fork via REST (equivalent to: POST /repos/microsoft/winget-pkgs/forks)
-            gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -f default_branch_only=true
+            Write-Host "Fork not found; creating under $owner ..."
+            # POST /repos/{owner}/{repo}/forks; add organization=... if PAT owner is an Organization
+            if ("${{ env.FORK_OWNER_TYPE }}" -eq "Organization") {
+              gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -f organization="$owner" -F default_branch_only=true
+            } else {
+              gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -F default_branch_only=true
+            }
+
+            # Forking is async: poll until the repo appears (max ~90s)
+            $deadline = (Get-Date).AddSeconds(90)
+            do {
+              Start-Sleep -Seconds 3
+              try {
+                gh repo view $forkSlug --json defaultBranchRef -q .defaultBranchRef.name | Out-Null
+                if ($LASTEXITCODE -eq 0) { $exists = $true }
+              } catch { $exists = $false }
+            } until ($exists -or (Get-Date) -gt $deadline)
+
+            if (-not $exists) { throw "Fork creation did not complete in time for $forkSlug." }
           } else {
             Write-Host "Fork already exists."
           }
@@ -124,10 +141,9 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
-        run: |
-          gh repo sync "${{ env.FORK_OWNER }}/winget-pkgs" -b master --force
+        run: gh repo sync "${{ env.FORK_OWNER }}/winget-pkgs" -b master --force
 
-      # --- end fork handling ---
+      # ---------- Submit with wingetcreate ----------
 
       - name: Update Winget Manifest
         shell: pwsh
