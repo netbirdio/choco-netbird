@@ -81,7 +81,7 @@ jobs:
           Write-Host "Installer URL: ${{ steps.release_info.outputs.installer_url }}"
           
           # Use wingetcreate to update and submit the manifest
-          .\wingetcreate.exe update netbirdio.netbird `
+          .\wingetcreate.exe update Netbird.Netbird `
             --version ${{ env.VERSION }} `
             --urls ${{ steps.release_info.outputs.installer_url }} `
             --submit `
