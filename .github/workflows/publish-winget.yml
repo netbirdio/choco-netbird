@@ -35,25 +35,44 @@ jobs:
 
       - name: Fetch release info
         id: release_info
+        env:
+          GH_API: https://api.github.com
         run: |
+          $ErrorActionPreference = 'Stop'
+
+          $headers = @{
+            Authorization         = "Bearer $env:GITHUB_TOKEN"
+            "User-Agent"          = "netbird-winget-action"
+            Accept                = "application/vnd.github+json"
+            "X-GitHub-Api-Version"= "2022-11-28"
+          }
+
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             # For manual dispatch, fetch release info from GitHub API
-            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/netbirdio/netbird/releases/tags/v${{ env.VERSION }}"
+            $release = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/tags/v${{ env.VERSION }}"
           } else {
             # For release event, use the current release
-            $release = Invoke-RestMethod -Uri "${{ github.event.release.url }}"
+            $release = Invoke-RestMethod -Headers $headers -Uri "${{ github.event.release.url }}"
           }
-          
+
           # Find MSI installer URL
-          $installerUrl = $release.assets | Where-Object { $_.name -like "*windows_amd64.msi" } | Select-Object -ExpandProperty browser_download_url
-          
+          $installerUrl = $release.assets |
+            Where-Object { $_.name -like "*windows_amd64.msi" } |
+            Select-Object -ExpandProperty browser_download_url -First 1
+
           if (-not $installerUrl) {
             Write-Error "No MSI installer found for version ${{ env.VERSION }}"
             exit 1
           }
-          
-          echo "installer_url=$installerUrl" >> $env:GITHUB_OUTPUT
-          echo "release_notes=$($release.body)" >> $env:GITHUB_OUTPUT
+
+          # Write single-line output safely
+          "installer_url=$installerUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          # Write multiline release notes using a unique delimiter
+          $delim = "EOF_$([Guid]::NewGuid().ToString('N'))"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "release_notes<<$delim"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value ($release.body -replace "`r","")
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $delim
 
       - name: Update Winget Manifest
         run: |
