@@ -56,24 +56,36 @@ jobs:
             $release = Invoke-RestMethod -Headers $headers -Uri "${{ github.event.release.url }}"
           }
 
-          # Find MSI installer URL
-          $installerUrl = $release.assets |
-            Where-Object { $_.name -like "*windows_amd64.msi" } |
-            Select-Object -ExpandProperty browser_download_url -First 1
+          $urls = @(
+            ($assets | Where-Object { $_.name -like "*windows_amd64.msi" } | Select-Object -ExpandProperty browser_download_url -First 1),
+            ($assets | Where-Object { $_.name -like "*windows_amd64.exe" } | Select-Object -ExpandProperty browser_download_url -First 1),
+            ($assets | Where-Object { $_.name -like "*windows_arm64.msi" } | Select-Object -ExpandProperty browser_download_url -First 1),
+            ($assets | Where-Object { $_.name -like "*windows_arm64.exe" } | Select-Object -ExpandProperty browser_download_url -First 1)
+          ) | Where-Object { $_ }
 
-          if (-not $installerUrl) {
-            Write-Error "No MSI installer found for version ${{ env.VERSION }}"
-            exit 1
+          if (-not $urls -or $urls.Count -eq 0) {
+            throw "No Windows installers found in v${{ env.VERSION }}."
           }
 
-          # Write single-line output safely
-          "installer_url=$installerUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Pick a primary (x64 MSI) for consumers that expect a single URL
+          $primary = $urls | Where-Object { $_ -like "*.msi" -and $_ -match "amd64" } | Select-Object -First 1
+          if (-not $primary) { $primary = $urls[0] }
 
-          # Write multiline release notes using a unique delimiter
-          $delim = "EOF_$([Guid]::NewGuid().ToString('N'))"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "release_notes<<$delim"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value ($release.body -replace "`r","")
-          Add-Content -Path $env:GITHUB_OUTPUT -Value $delim
+          # Output: single-line
+          "installer_url=$primary" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          # Output: multiline list of all installer URLs
+          $delimUrls = "EOF_$([Guid]::NewGuid().ToString('N'))"
+          Add-Content $env:GITHUB_OUTPUT "installer_urls<<$delimUrls"
+          $urls | ForEach-Object { Add-Content $env:GITHUB_OUTPUT $_ }
+          Add-Content $env:GITHUB_OUTPUT $delimUrls
+
+          # Output: release notes (multiline; normalize to LF)
+          $notes = ($release.body ?? "") -replace "`r",""
+          $delimNotes = "EOF_$([Guid]::NewGuid().ToString('N'))"
+          Add-Content $env:GITHUB_OUTPUT "release_notes<<$delimNotes"
+          Add-Content $env:GITHUB_OUTPUT $notes
+          Add-Content $env:GITHUB_OUTPUT $delimNotes
 
       - name: Update Winget Manifest
         run: |
