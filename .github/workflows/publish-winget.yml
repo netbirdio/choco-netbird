@@ -86,7 +86,6 @@ jobs:
             --urls ${{ steps.release_info.outputs.installer_url }} `
             --submit `
             --token ${{ secrets.WINGET_PAT }} `
-            --description "NetBird is an open-source VPN management platform built on WireGuard® making it easy to create secure private networks for your organization."
 
       - name: Verify submission
         run: |
