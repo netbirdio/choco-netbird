@@ -6,13 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Netbird version to publish (e.g., 0.59.8)'
+        description: 'Netbird version to publish (e.g., 0.59.9)'
         required: true
         type: string
 
 jobs:
   publish-winget:
     runs-on: windows-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -56,43 +57,71 @@ jobs:
             $release = Invoke-RestMethod -Headers $headers -Uri "${{ github.event.release.url }}"
           }
 
-          # IMPORTANT: set $assets
           $assets = $release.assets
           if (-not $assets) {
             throw "Release v${{ env.VERSION }} has no assets (is the tag correct and the build finished?)."
           }
 
-          # Collect MSI & EXE installers for x64 and arm64
           $msi_x64 = $assets | Where-Object { $_.name -like "*windows_amd64.msi" } | Select-Object -ExpandProperty browser_download_url -First 1
           $exe_x64 = $assets | Where-Object { $_.name -like "*windows_amd64.exe" } | Select-Object -ExpandProperty browser_download_url -First 1
           $msi_arm = $assets | Where-Object { $_.name -like "*windows_arm64.msi" } | Select-Object -ExpandProperty browser_download_url -First 1
           $exe_arm = $assets | Where-Object { $_.name -like "*windows_arm64.exe" } | Select-Object -ExpandProperty browser_download_url -First 1
 
-          # At least one installer must exist
           $any = @($msi_x64, $exe_x64, $msi_arm, $exe_arm) | Where-Object { $_ }
           if (-not $any -or $any.Count -eq 0) {
             throw "No Windows installers (MSI/EXE) found in v${{ env.VERSION }}."
           }
 
-          # Qualify with architecture to help WingetCreate match correctly
-          # (WingetCreate also matches by installer type automatically)
           $qualified = @()
           if ($msi_x64) { $qualified += "$msi_x64|x64" }
           if ($exe_x64) { $qualified += "$exe_x64|x64" }
           if ($msi_arm) { $qualified += "$msi_arm|arm64" }
           if ($exe_arm) { $qualified += "$exe_arm|arm64" }
 
-          # Persist for next step; also expose a primary for logs
           Set-Content -Path installer_urls.txt -Value ($qualified -join "`n")
           "installer_urls_file=installer_urls.txt" >> $env:GITHUB_OUTPUT
           "installer_url=$($any[0])"               >> $env:GITHUB_OUTPUT
 
-          # (Optional) release notes, normalized to LF
           $notes = ($release.body ?? "") -replace "`r",""
           $delimNotes = "EOF_$([Guid]::NewGuid().ToString('N'))"
           Add-Content $env:GITHUB_OUTPUT "release_notes<<$delimNotes"
           Add-Content $env:GITHUB_OUTPUT $notes
           Add-Content $env:GITHUB_OUTPUT $delimNotes
+
+
+      - name: Install GitHub CLI
+        shell: pwsh
+        run: choco install gh -y
+
+      - name: Configure GH_TOKEN for gh CLI
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          # Use PAT so 'gh' can create/sync fork
+          echo "GH_TOKEN=$env:WINGET_PAT" >> $env:GITHUB_ENV
+
+      - name: Ensure winget-pkgs fork exists (create if missing)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ env.GH_TOKEN }}
+        run: |
+          $forkName = "${{ github.actor }}/winget-pkgs"
+          Write-Host "Checking for fork $forkName..."
+          $exists = (gh repo view $forkName) -ne $null
+          if (-not $exists) {
+            Write-Host "Fork not found; creating…"
+            gh repo fork microsoft/winget-pkgs --clone=false --remote=false
+          } else {
+            Write-Host "Fork already exists."
+          }
+
+      - name: Sync winget-pkgs fork with upstream (master)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ env.GH_TOKEN }}
+        run: |
+          gh repo sync "${{ github.actor }}/winget-pkgs" -b master --force
 
       - name: Update Winget Manifest
         shell: pwsh
@@ -105,9 +134,9 @@ jobs:
           $urls = Get-Content "${{ steps.release_info.outputs.installer_urls_file }}" | Where-Object { $_.Trim() }
           if (-not $urls) { throw "No installer URLs to submit." }
 
-          # Pass ALL MSI+EXE installers to match the existing multi-installer manifest
           .\wingetcreate.exe update Netbird.Netbird `
             --version $env:VERSION `
+            --display-version $env:VERSION `
             --urls $urls `
             --submit `
             --token $env:WINGET_PAT
