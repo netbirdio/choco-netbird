@@ -37,11 +37,12 @@ jobs:
         id: release_info
         env:
           GH_API: https://api.github.com
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           $headers = @{
-            Authorization         = "Bearer $env:GITHUB_TOKEN"
+            Authorization         = "Bearer $env:WINGET_PAT"
             "User-Agent"          = "netbird-winget-action"
             Accept                = "application/vnd.github+json"
             "X-GitHub-Api-Version"= "2022-11-28"
