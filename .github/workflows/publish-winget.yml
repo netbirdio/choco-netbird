@@ -77,71 +77,64 @@ jobs:
           "installer_urls_file=installer_urls.txt" >> $env:GITHUB_OUTPUT
           "installer_url=$($any[0])"               >> $env:GITHUB_OUTPUT
 
-      # ---------- Fork under PAT owner, then sync ----------
+      # ---------- Fork under PAT user, then sync ----------
 
       - name: Install GitHub CLI
         shell: pwsh
         run: choco install gh -y
 
-      - name: Authenticate gh with PAT and resolve PAT owner
+      - name: Resolve PAT user (who will own the fork)
         id: whoami
         shell: pwsh
         env:
-          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+          GH_TOKEN: ${{ secrets.WINGET_PAT }}   # <-- set for THIS step
         run: |
-          echo "GH_TOKEN=$env:WINGET_PAT" >> $env:GITHUB_ENV
+          $login = gh api /user --jq .login
+          if (-not $login) { throw "Could not determine PAT owner via /user" }
+          "login=$login" >> $env:GITHUB_OUTPUT
+          Write-Host "PAT user: $login"
 
-          $u = gh api /user --jq "{login: .login, type: .type}"
-          if (-not $u) { throw "Could not determine PAT owner via /user" }
-          $obj = $u | ConvertFrom-Json
-          "FORK_OWNER=$($obj.login)" >> $env:GITHUB_ENV
-          "FORK_OWNER_TYPE=$($obj.type)" >> $env:GITHUB_ENV
-          Write-Host "PAT owner: $($obj.login) ($($obj.type))"
-
-      - name: Ensure fork exists (create if missing) under PAT owner
+      - name: Ensure fork exists under PAT user (create if missing)
         shell: pwsh
         env:
-          GH_TOKEN: ${{ env.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.WINGET_PAT }}   # <-- set for THIS step
         run: |
-          $owner = "${{ env.FORK_OWNER }}"
-          $forkSlug = "$owner/winget-pkgs"
+          $login = "${{ steps.whoami.outputs.login }}"
+          $fork  = "$login/winget-pkgs"
+          Write-Host "Checking fork $fork ..."
 
-          Write-Host "Checking for fork $forkSlug ..."
           $exists = $false
           try {
-            gh repo view $forkSlug --json name -q .name | Out-Null
+            gh repo view $fork --json name -q .name | Out-Null
             if ($LASTEXITCODE -eq 0) { $exists = $true }
           } catch { $exists = $false }
 
           if (-not $exists) {
-            Write-Host "Fork not found; creating under $owner ..."
-            # POST /repos/{owner}/{repo}/forks; add organization=... if PAT owner is an Organization
-            if ("${{ env.FORK_OWNER_TYPE }}" -eq "Organization") {
-              gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -f organization="$owner" -F default_branch_only=true
-            } else {
-              gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -F default_branch_only=true
-            }
+            Write-Host "Fork not found; creating under $login ..."
+            gh api --method POST -H "Accept: application/vnd.github+json" /repos/microsoft/winget-pkgs/forks -F default_branch_only=true
 
-            # Forking is async: poll until the repo appears (max ~90s)
+            # forking is async: poll until it appears
             $deadline = (Get-Date).AddSeconds(90)
             do {
               Start-Sleep -Seconds 3
               try {
-                gh repo view $forkSlug --json defaultBranchRef -q .defaultBranchRef.name | Out-Null
+                gh repo view $fork --json defaultBranchRef -q .defaultBranchRef.name | Out-Null
                 if ($LASTEXITCODE -eq 0) { $exists = $true }
               } catch { $exists = $false }
             } until ($exists -or (Get-Date) -gt $deadline)
 
-            if (-not $exists) { throw "Fork creation did not complete in time for $forkSlug." }
+            if (-not $exists) { throw "Fork creation did not complete in time for $fork." }
           } else {
             Write-Host "Fork already exists."
           }
 
-      - name: Sync PAT-owner fork with upstream (master)
+      - name: Sync fork with upstream
         shell: pwsh
         env:
-          GH_TOKEN: ${{ env.GH_TOKEN }}
-        run: gh repo sync "${{ env.FORK_OWNER }}/winget-pkgs" -b master --force
+          GH_TOKEN: ${{ secrets.WINGET_PAT }}   # <-- set for THIS step
+        run: |
+          $login = "${{ steps.whoami.outputs.login }}"
+          gh repo sync "$login/winget-pkgs" -b master --force
 
       # ---------- Submit with wingetcreate ----------
 
