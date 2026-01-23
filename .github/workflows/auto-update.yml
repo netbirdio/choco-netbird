@@ -9,7 +9,7 @@ jobs:
   check_update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Get latest version
         uses: rez0n/actions-github-release@main
         id: netbird_release
@@ -43,7 +43,7 @@ jobs:
           sed -i "s|version>.*<|version>${{ steps.latest_netbird_release.outputs.value }}<|g" netbird.nuspec
       - name: Create Pull Request
         if: steps.get_current_version.outputs.info != steps.latest_netbird_release.outputs.value
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.PAT }}
           commit-message: Bumping NetBird version to ${{ steps.latest_netbird_release.outputs.value }}
