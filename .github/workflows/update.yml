@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Capture the dispatched version
         id: set_version
@@ -32,7 +32,7 @@ jobs:
           sed -i "s|version>.*<|version>${{ env.VERSION }}<|g" netbird.nuspec
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.PAT }}
           commit-message: "Bumping NetBird version to ${{ env.VERSION }}"
