@@ -3,15 +3,11 @@ name: Publish Netbird to Winget
 on:
   release:
     types: [published]
-  push:
-    branches:
-    - validate-winget
   workflow_dispatch:
     inputs:
       version:
         description: 'Netbird version to publish (e.g., 0.59.8)'
         required: true
-        default: '0.70.4'
         type: string
 
 jobs:
@@ -248,14 +244,14 @@ jobs:
           $global:LASTEXITCODE = 0
         continue-on-error: true
 
-#      - name: Submit Winget Manifest
-#        shell: pwsh
-#        env:
-#          WINGET_PAT: ${{ secrets.WINGET_PAT }}
-#        run: |
-#          $ErrorActionPreference = 'Stop'
-#          .\wingetcreate.exe submit `
-#            --token $env:WINGET_PAT `
-#            $env:manifest_dir
-#          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit exited with code $LASTEXITCODE" }
-#          Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
+      - name: Submit Winget Manifest
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\wingetcreate.exe submit `
+            --token $env:WINGET_PAT `
+            $env:manifest_dir
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit exited with code $LASTEXITCODE" }
+          Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
