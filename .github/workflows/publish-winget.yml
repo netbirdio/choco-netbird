@@ -81,10 +81,13 @@ jobs:
             "X-GitHub-Api-Version" = "2022-11-28"
           }
 
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $release = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/tags/v${{ env.VERSION }}"
-          } else {
+          # Only the 'release' trigger has a populated github.event.release.url;
+          # for workflow_dispatch and push (validate-winget) we resolved $env:VERSION
+          # in the previous step and look the tag up by name.
+          if ("${{ github.event_name }}" -eq "release") {
             $release = Invoke-RestMethod -Headers $headers -Uri "${{ github.event.release.url }}"
+          } else {
+            $release = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/tags/v$env:VERSION"
           }
 
           # IMPORTANT: set $assets
