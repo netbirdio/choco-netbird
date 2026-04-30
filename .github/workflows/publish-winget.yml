@@ -3,11 +3,14 @@ name: Publish Netbird to Winget
 on:
   release:
     types: [published]
+  push:
+    - validate-winget
   workflow_dispatch:
     inputs:
       version:
         description: 'Netbird version to publish (e.g., 0.59.8)'
         required: true
+        default: '0.70.4'
         type: string
 
 jobs:
@@ -153,8 +156,16 @@ jobs:
 
           # PR checklist requirement: winget validate --manifest <path>
           # See https://github.com/microsoft/winget-pkgs/blob/master/doc/Authoring.md#validation
-          winget validate --manifest $env:manifest_dir
-          if ($LASTEXITCODE -ne 0) { throw "winget validate failed with exit code $LASTEXITCODE" }
+          # winget exits with a non-zero HRESULT (e.g. 0x8A150028) when validation
+          # succeeds with warnings, so inspect stdout instead of the exit code alone.
+          $output = (winget validate --manifest $env:manifest_dir 2>&1) | Out-String
+          $exit = $LASTEXITCODE
+          Write-Host $output
+          if ($output -match 'Manifest validation succeeded') {
+            Write-Host "winget validate accepted manifest (exit code $exit)"
+          } elseif ($exit -ne 0) {
+            throw "winget validate failed with exit code $exit"
+          }
 
           # PR checklist requirement: manifest must conform to the 1.12 schema
           $versionYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.yaml'
