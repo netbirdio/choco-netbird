@@ -191,6 +191,8 @@ jobs:
           Write-Host $output
           if ($output -match 'Manifest validation succeeded') {
             Write-Host "winget validate accepted manifest (exit code $exit)"
+            # Clear the non-zero HRESULT so it does not become this step's exit code
+            $global:LASTEXITCODE = 0
           } elseif ($exit -ne 0) {
             throw "winget validate failed with exit code $exit"
           }
