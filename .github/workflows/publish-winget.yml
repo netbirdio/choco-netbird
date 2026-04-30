@@ -29,12 +29,39 @@ jobs:
       - name: Determine version
         id: version
         shell: pwsh
+        env:
+          GH_API: https://api.github.com
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $version = "${{ github.event.inputs.version }}"
-          } else {
-            $version = "${{ github.event.release.tag_name }}".TrimStart('v')
+          $ErrorActionPreference = 'Stop'
+
+          switch ("${{ github.event_name }}") {
+            'workflow_dispatch' { $version = "${{ github.event.inputs.version }}" }
+            'release'           { $version = "${{ github.event.release.tag_name }}".TrimStart('v') }
+            'push' {
+              # Push trigger is for validating the workflow on the validate-winget branch.
+              # Resolve the latest published Netbird release so the rest of the pipeline
+              # exercises a real version end-to-end (no submission step runs on push).
+              $headers = @{
+                Authorization          = "Bearer $env:WINGET_PAT"
+                "User-Agent"           = "netbird-winget-action"
+                Accept                 = "application/vnd.github+json"
+                "X-GitHub-Api-Version" = "2022-11-28"
+              }
+              $latest = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/latest"
+              $version = $latest.tag_name.TrimStart('v')
+            }
+            default { throw "Unsupported event '${{ github.event_name }}' for version resolution" }
           }
+
+          if (-not $version) {
+            throw "Resolved version is empty for event '${{ github.event_name }}'"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "Version '$version' does not match expected format X.Y.Z or X.Y.Z.W"
+          }
+
+          Write-Host "Resolved Netbird version: $version"
           "VERSION=$version" >> $env:GITHUB_ENV
           "version=$version" >> $env:GITHUB_OUTPUT
 
