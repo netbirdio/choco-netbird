@@ -4,6 +4,7 @@ on:
   release:
     types: [published]
   push:
+    branches:
     - validate-winget
   workflow_dispatch:
     inputs:
