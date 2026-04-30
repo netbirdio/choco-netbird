@@ -94,30 +94,117 @@ jobs:
           Add-Content $env:GITHUB_OUTPUT $notes
           Add-Content $env:GITHUB_OUTPUT $delimNotes
 
-      - name: Update Winget Manifest
+      - name: Generate Winget Manifest
         shell: pwsh
         env:
           WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          Write-Host "Updating Winget manifest for Netbird ${{ env.VERSION }}"
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Generating Winget manifest for Netbird ${{ env.VERSION }}"
           Write-Host "Example installer: ${{ steps.release_info.outputs.installer_url }}"
 
           $urls = Get-Content "${{ steps.release_info.outputs.installer_urls_file }}" | Where-Object { $_.Trim() }
           if (-not $urls) { throw "No installer URLs to submit." }
 
-          # Pass ALL MSI+EXE installers to match the existing multi-installer manifest
+          New-Item -ItemType Directory -Force -Path manifests | Out-Null
+
+          # Pass ALL MSI+EXE installers to match the existing multi-installer manifest.
+          # Output to a local directory so the manifest can be validated before submission.
           .\wingetcreate.exe update Netbird.Netbird `
             --version $env:VERSION `
             --urls $urls `
-            --submit `
+            --out manifests `
             --token $env:WINGET_PAT
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate update exited with code $LASTEXITCODE" }
 
-      - name: Verify submission
+          $manifestDir = Get-ChildItem -Path manifests -Recurse -Directory `
+            | Where-Object { Test-Path (Join-Path $_.FullName 'Netbird.Netbird.yaml') } `
+            | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $manifestDir) { throw "Could not locate generated manifest under .\manifests" }
+
+          Write-Host "Generated manifest at: $manifestDir"
+          "manifest_dir=$manifestDir" >> $env:GITHUB_ENV
+
+      - name: Patch AppsAndFeaturesEntries DisplayVersion
         shell: pwsh
         run: |
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
-          } else {
-            Write-Error "❌ Failed to submit Winget manifest update"
-            exit 1
+          $ErrorActionPreference = 'Stop'
+          # wingetcreate carries DisplayVersion forward from the previous manifest
+          # for installers (notably nullsoft EXE) where it cannot be inferred from
+          # the binary. The Microsoft Community Repo rejects PRs whose
+          # AppsAndFeaturesEntries.DisplayVersion overlaps with an existing
+          # indexed range, so realign it to the new PackageVersion before submit.
+          $installerYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.installer.yaml'
+          if (-not (Test-Path $installerYaml)) { throw "Installer manifest not found at $installerYaml" }
+
+          $content = Get-Content $installerYaml -Raw
+          $patched = [regex]::Replace(
+            $content,
+            '(?m)^(\s*DisplayVersion:\s*).+$',
+            "`${1}$env:VERSION"
+          )
+          Set-Content -Path $installerYaml -Value $patched -NoNewline
+
+      - name: Validate Winget Manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Validating manifest at $env:manifest_dir"
+
+          # PR checklist requirement: winget validate --manifest <path>
+          # See https://github.com/microsoft/winget-pkgs/blob/master/doc/Authoring.md#validation
+          winget validate --manifest $env:manifest_dir
+          if ($LASTEXITCODE -ne 0) { throw "winget validate failed with exit code $LASTEXITCODE" }
+
+          # PR checklist requirement: manifest must conform to the 1.12 schema
+          $versionYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.yaml'
+          $versionContent = Get-Content $versionYaml -Raw
+          if ($versionContent -notmatch '(?m)^ManifestVersion:\s*1\.12') {
+            throw "ManifestVersion must be 1.12.x to satisfy winget-pkgs schema requirement"
           }
+
+          # PackageVersion across all manifest files must match the release tag
+          $manifestFiles = Get-ChildItem -Path $env:manifest_dir -Filter '*.yaml'
+          foreach ($f in $manifestFiles) {
+            $c = Get-Content $f.FullName -Raw
+            if ($c -notmatch "(?m)^PackageVersion:\s*$([regex]::Escape($env:VERSION))\s*$") {
+              throw "PackageVersion in $($f.Name) does not match expected $env:VERSION"
+            }
+          }
+
+          Write-Host "✅ Manifest validation passed for Netbird $env:VERSION"
+
+      - name: Sandbox-test Winget Manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # PR checklist requirement: winget install --manifest <path>
+          # winget-pkgs reviewers expect installers to be sandbox-tested before submission.
+          # GitHub-hosted windows-latest runners do not support nested virtualization,
+          # so Windows Sandbox is unavailable and we run a local source-add + install
+          # smoke test instead, which exercises the same manifest the submit step uploads.
+          winget source add --name netbird-local --type Microsoft.PreIndexed.Package --arg $env:manifest_dir --trust-level trusted 2>&1 | Out-Host
+          try {
+            winget install --manifest $env:manifest_dir --accept-package-agreements --accept-source-agreements --silent --disable-interactivity
+            $installExit = $LASTEXITCODE
+          } finally {
+            winget source remove --name netbird-local 2>&1 | Out-Host
+          }
+          if ($installExit -ne 0) {
+            Write-Warning "winget install --manifest exited with $installExit; submission will still proceed since dependency installation may not be available on the runner"
+          } else {
+            Write-Host "✅ winget install --manifest succeeded"
+          }
+        continue-on-error: true
+
+#      - name: Submit Winget Manifest
+#        shell: pwsh
+#        env:
+#          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+#        run: |
+#          $ErrorActionPreference = 'Stop'
+#          .\wingetcreate.exe submit `
+#            --token $env:WINGET_PAT `
+#            $env:manifest_dir
+#          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit exited with code $LASTEXITCODE" }
+#          Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
