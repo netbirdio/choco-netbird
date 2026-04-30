@@ -117,8 +117,10 @@ jobs:
           "installer_urls_file=installer_urls.txt" >> $env:GITHUB_OUTPUT
           "installer_url=$($any[0])"               >> $env:GITHUB_OUTPUT
 
-          # (Optional) release notes, normalized to LF
+          # Release notes (normalized to LF) are persisted both as a step output
+          # for visibility and as a workspace file the manifest patch step reads.
           $notes = ($release.body ?? "") -replace "`r",""
+          Set-Content -Path release_notes.txt -Value $notes -Encoding UTF8 -NoNewline
           $delimNotes = "EOF_$([Guid]::NewGuid().ToString('N'))"
           Add-Content $env:GITHUB_OUTPUT "release_notes<<$delimNotes"
           Add-Content $env:GITHUB_OUTPUT $notes
@@ -174,6 +176,53 @@ jobs:
             "`${1}$env:VERSION"
           )
           Set-Content -Path $installerYaml -Value $patched -NoNewline
+
+      - name: Inject ReleaseNotes into Locale Manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The Microsoft Community Repo's Manifest-Metadata-Consistency check
+          # rejects updates that drop optional fields the previously published
+          # version carried. Netbird 0.67.1 has a ReleaseNotes body, so we
+          # propagate the GitHub release body into the en-US default locale.
+          $localeYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.locale.en-US.yaml'
+          if (-not (Test-Path $localeYaml)) { throw "en-US locale manifest not found at $localeYaml" }
+
+          if (-not (Test-Path 'release_notes.txt')) {
+            Write-Warning "release_notes.txt not found; skipping ReleaseNotes injection"
+            return
+          }
+          $notes = (Get-Content -Path 'release_notes.txt' -Raw -Encoding UTF8).Trim()
+          if (-not $notes) {
+            Write-Warning "Release body is empty; skipping ReleaseNotes injection"
+            return
+          }
+
+          # Schema 1.12 caps ReleaseNotes at 10000 characters
+          if ($notes.Length -gt 10000) {
+            $notes = $notes.Substring(0, 9990) + "..."
+          }
+
+          $content = Get-Content $localeYaml -Raw
+          if ($content -match '(?m)^ReleaseNotes:') {
+            Write-Host "ReleaseNotes already present; leaving as-is"
+            return
+          }
+
+          $indented = ($notes -split "`n" | ForEach-Object { "  $_" }) -join "`n"
+          $block = "ReleaseNotes: |-`n$indented`n"
+
+          # Insert ReleaseNotes block immediately before ReleaseNotesUrl so the
+          # two related fields stay together for readability.
+          if ($content -match '(?m)^ReleaseNotesUrl:') {
+            $patched = [regex]::Replace($content, '(?m)^(ReleaseNotesUrl:)', "$block`$1", 1)
+          } else {
+            # Fallback: append before the trailing ManifestType line
+            $patched = [regex]::Replace($content, '(?m)^(ManifestType:)', "$block`$1", 1)
+          }
+
+          Set-Content -Path $localeYaml -Value $patched -NoNewline -Encoding UTF8
+          Write-Host "Injected ReleaseNotes ($($notes.Length) chars) into $localeYaml"
 
       - name: Validate Winget Manifest
         shell: pwsh
@@ -243,6 +292,46 @@ jobs:
           # Prevent the install HRESULT from becoming the step's exit code
           $global:LASTEXITCODE = 0
         continue-on-error: true
+
+      - name: Check for duplicate winget-pkgs PR
+        if: github.event_name != 'push'
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+          OUR_AUTHOR: mlsmaycon
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # winget-pkgs auto-flags Possible-Duplicate when two open PRs touch
+          # the same manifest path. Only block when the open PR is one we
+          # already submitted (so we don't stack duplicates of our own); PRs
+          # from other contributors are allowed to coexist - the maintainers
+          # will pick whichever is healthier and close the other.
+          $headers = @{
+            Authorization          = "Bearer $env:WINGET_PAT"
+            "User-Agent"           = "netbird-winget-action"
+            Accept                 = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $query = "repo:microsoft/winget-pkgs is:pr is:open Netbird.Netbird $env:VERSION in:title"
+          $encoded = [uri]::EscapeDataString($query)
+          $resp = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/search/issues?q=$encoded"
+          if ($resp.total_count -eq 0) {
+            Write-Host "No open winget-pkgs PR found for Netbird.Netbird $env:VERSION"
+            return
+          }
+
+          $ours = @($resp.items | Where-Object { $_.user.login -eq $env:OUR_AUTHOR })
+          $others = @($resp.items | Where-Object { $_.user.login -ne $env:OUR_AUTHOR })
+
+          if ($ours.Count -gt 0) {
+            $urls = ($ours | Select-Object -ExpandProperty html_url) -join ', '
+            throw "Open winget-pkgs PR(s) already submitted by $env:OUR_AUTHOR for Netbird.Netbird $($env:VERSION): $urls. Close them before resubmitting."
+          }
+
+          if ($others.Count -gt 0) {
+            $details = ($others | ForEach-Object { "$($_.html_url) (by @$($_.user.login))" }) -join ', '
+            Write-Warning "Open winget-pkgs PR(s) from other contributors for Netbird.Netbird $($env:VERSION): $details. Submitting our own PR; maintainers will reconcile."
+          }
 
       - name: Submit Winget Manifest
         shell: pwsh
