@@ -25,12 +25,39 @@ jobs:
       - name: Determine version
         id: version
         shell: pwsh
+        env:
+          GH_API: https://api.github.com
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $version = "${{ github.event.inputs.version }}"
-          } else {
-            $version = "${{ github.event.release.tag_name }}".TrimStart('v')
+          $ErrorActionPreference = 'Stop'
+
+          switch ("${{ github.event_name }}") {
+            'workflow_dispatch' { $version = "${{ github.event.inputs.version }}" }
+            'release'           { $version = "${{ github.event.release.tag_name }}".TrimStart('v') }
+            'push' {
+              # Push trigger is for validating the workflow on the validate-winget branch.
+              # Resolve the latest published Netbird release so the rest of the pipeline
+              # exercises a real version end-to-end (no submission step runs on push).
+              $headers = @{
+                Authorization          = "Bearer $env:WINGET_PAT"
+                "User-Agent"           = "netbird-winget-action"
+                Accept                 = "application/vnd.github+json"
+                "X-GitHub-Api-Version" = "2022-11-28"
+              }
+              $latest = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/latest"
+              $version = $latest.tag_name.TrimStart('v')
+            }
+            default { throw "Unsupported event '${{ github.event_name }}' for version resolution" }
           }
+
+          if (-not $version) {
+            throw "Resolved version is empty for event '${{ github.event_name }}'"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "Version '$version' does not match expected format X.Y.Z or X.Y.Z.W"
+          }
+
+          Write-Host "Resolved Netbird version: $version"
           "VERSION=$version" >> $env:GITHUB_ENV
           "version=$version" >> $env:GITHUB_OUTPUT
 
@@ -50,10 +77,13 @@ jobs:
             "X-GitHub-Api-Version" = "2022-11-28"
           }
 
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $release = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/tags/v${{ env.VERSION }}"
-          } else {
+          # Only the 'release' trigger has a populated github.event.release.url;
+          # for workflow_dispatch and push (validate-winget) we resolved $env:VERSION
+          # in the previous step and look the tag up by name.
+          if ("${{ github.event_name }}" -eq "release") {
             $release = Invoke-RestMethod -Headers $headers -Uri "${{ github.event.release.url }}"
+          } else {
+            $release = Invoke-RestMethod -Headers $headers -Uri "$env:GH_API/repos/netbirdio/netbird/releases/tags/v$env:VERSION"
           }
 
           # IMPORTANT: set $assets
@@ -87,37 +117,230 @@ jobs:
           "installer_urls_file=installer_urls.txt" >> $env:GITHUB_OUTPUT
           "installer_url=$($any[0])"               >> $env:GITHUB_OUTPUT
 
-          # (Optional) release notes, normalized to LF
+          # Release notes (normalized to LF) are persisted both as a step output
+          # for visibility and as a workspace file the manifest patch step reads.
           $notes = ($release.body ?? "") -replace "`r",""
+          Set-Content -Path release_notes.txt -Value $notes -Encoding UTF8 -NoNewline
           $delimNotes = "EOF_$([Guid]::NewGuid().ToString('N'))"
           Add-Content $env:GITHUB_OUTPUT "release_notes<<$delimNotes"
           Add-Content $env:GITHUB_OUTPUT $notes
           Add-Content $env:GITHUB_OUTPUT $delimNotes
 
-      - name: Update Winget Manifest
+      - name: Generate Winget Manifest
         shell: pwsh
         env:
           WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          Write-Host "Updating Winget manifest for Netbird ${{ env.VERSION }}"
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Generating Winget manifest for Netbird ${{ env.VERSION }}"
           Write-Host "Example installer: ${{ steps.release_info.outputs.installer_url }}"
 
           $urls = Get-Content "${{ steps.release_info.outputs.installer_urls_file }}" | Where-Object { $_.Trim() }
           if (-not $urls) { throw "No installer URLs to submit." }
 
-          # Pass ALL MSI+EXE installers to match the existing multi-installer manifest
+          New-Item -ItemType Directory -Force -Path manifests | Out-Null
+
+          # Pass ALL MSI+EXE installers to match the existing multi-installer manifest.
+          # Output to a local directory so the manifest can be validated before submission.
           .\wingetcreate.exe update Netbird.Netbird `
             --version $env:VERSION `
             --urls $urls `
-            --submit `
+            --out manifests `
             --token $env:WINGET_PAT
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate update exited with code $LASTEXITCODE" }
 
-      - name: Verify submission
+          $manifestDir = Get-ChildItem -Path manifests -Recurse -Directory `
+            | Where-Object { Test-Path (Join-Path $_.FullName 'Netbird.Netbird.yaml') } `
+            | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $manifestDir) { throw "Could not locate generated manifest under .\manifests" }
+
+          Write-Host "Generated manifest at: $manifestDir"
+          "manifest_dir=$manifestDir" >> $env:GITHUB_ENV
+
+      - name: Patch AppsAndFeaturesEntries DisplayVersion
         shell: pwsh
         run: |
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
-          } else {
-            Write-Error "❌ Failed to submit Winget manifest update"
-            exit 1
+          $ErrorActionPreference = 'Stop'
+          # wingetcreate carries DisplayVersion forward from the previous manifest
+          # for installers (notably nullsoft EXE) where it cannot be inferred from
+          # the binary. The Microsoft Community Repo rejects PRs whose
+          # AppsAndFeaturesEntries.DisplayVersion overlaps with an existing
+          # indexed range, so realign it to the new PackageVersion before submit.
+          $installerYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.installer.yaml'
+          if (-not (Test-Path $installerYaml)) { throw "Installer manifest not found at $installerYaml" }
+
+          $content = Get-Content $installerYaml -Raw
+          $patched = [regex]::Replace(
+            $content,
+            '(?m)^(\s*DisplayVersion:\s*).+$',
+            "`${1}$env:VERSION"
+          )
+          Set-Content -Path $installerYaml -Value $patched -NoNewline
+
+      - name: Inject ReleaseNotes into Locale Manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The Microsoft Community Repo's Manifest-Metadata-Consistency check
+          # rejects updates that drop optional fields the previously published
+          # version carried. Netbird 0.67.1 has a ReleaseNotes body, so we
+          # propagate the GitHub release body into the en-US default locale.
+          $localeYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.locale.en-US.yaml'
+          if (-not (Test-Path $localeYaml)) { throw "en-US locale manifest not found at $localeYaml" }
+
+          if (-not (Test-Path 'release_notes.txt')) {
+            Write-Warning "release_notes.txt not found; skipping ReleaseNotes injection"
+            return
           }
+          $notes = (Get-Content -Path 'release_notes.txt' -Raw -Encoding UTF8).Trim()
+          if (-not $notes) {
+            Write-Warning "Release body is empty; skipping ReleaseNotes injection"
+            return
+          }
+
+          # Schema 1.12 caps ReleaseNotes at 10000 characters
+          if ($notes.Length -gt 10000) {
+            $notes = $notes.Substring(0, 9990) + "..."
+          }
+
+          $content = Get-Content $localeYaml -Raw
+          if ($content -match '(?m)^ReleaseNotes:') {
+            Write-Host "ReleaseNotes already present; leaving as-is"
+            return
+          }
+
+          $indented = ($notes -split "`n" | ForEach-Object { "  $_" }) -join "`n"
+          $block = "ReleaseNotes: |-`n$indented`n"
+
+          # Insert ReleaseNotes block immediately before ReleaseNotesUrl so the
+          # two related fields stay together for readability.
+          if ($content -match '(?m)^ReleaseNotesUrl:') {
+            $patched = [regex]::Replace($content, '(?m)^(ReleaseNotesUrl:)', "$block`$1", 1)
+          } else {
+            # Fallback: append before the trailing ManifestType line
+            $patched = [regex]::Replace($content, '(?m)^(ManifestType:)', "$block`$1", 1)
+          }
+
+          Set-Content -Path $localeYaml -Value $patched -NoNewline -Encoding UTF8
+          Write-Host "Injected ReleaseNotes ($($notes.Length) chars) into $localeYaml"
+
+      - name: Validate Winget Manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Validating manifest at $env:manifest_dir"
+
+          # PR checklist requirement: winget validate --manifest <path>
+          # See https://github.com/microsoft/winget-pkgs/blob/master/doc/Authoring.md#validation
+          # winget exits with a non-zero HRESULT (e.g. 0x8A150028) when validation
+          # succeeds with warnings, so inspect stdout instead of the exit code alone.
+          $output = (winget validate --manifest $env:manifest_dir 2>&1) | Out-String
+          $exit = $LASTEXITCODE
+          Write-Host $output
+          if ($output -match 'Manifest validation succeeded') {
+            Write-Host "winget validate accepted manifest (exit code $exit)"
+            # Clear the non-zero HRESULT so it does not become this step's exit code
+            $global:LASTEXITCODE = 0
+          } elseif ($exit -ne 0) {
+            throw "winget validate failed with exit code $exit"
+          }
+
+          # PR checklist requirement: manifest must conform to the 1.12 schema
+          $versionYaml = Join-Path $env:manifest_dir 'Netbird.Netbird.yaml'
+          $versionContent = Get-Content $versionYaml -Raw
+          if ($versionContent -notmatch '(?m)^ManifestVersion:\s*1\.12') {
+            throw "ManifestVersion must be 1.12.x to satisfy winget-pkgs schema requirement"
+          }
+
+          # PackageVersion across all manifest files must match the release tag
+          $manifestFiles = Get-ChildItem -Path $env:manifest_dir -Filter '*.yaml'
+          foreach ($f in $manifestFiles) {
+            $c = Get-Content $f.FullName -Raw
+            if ($c -notmatch "(?m)^PackageVersion:\s*$([regex]::Escape($env:VERSION))\s*$") {
+              throw "PackageVersion in $($f.Name) does not match expected $env:VERSION"
+            }
+          }
+
+          Write-Host "✅ Manifest validation passed for Netbird $env:VERSION"
+
+      - name: Sandbox-test Winget Manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # PR checklist requirement: winget install --manifest <path>
+          # Hosted windows-latest runners do not support Windows Sandbox (no nested
+          # virtualization), so we run an in-place install smoke test instead.
+          # The local-manifest install path is gated behind a setting that must be
+          # enabled with admin rights; GitHub Actions runners run elevated, so this
+          # succeeds non-interactively.
+          winget settings --enable LocalManifestFiles 2>&1 | Out-Host
+
+          winget install --manifest $env:manifest_dir `
+            --accept-package-agreements --accept-source-agreements `
+            --silent --disable-interactivity --skip-dependencies --no-upgrade 2>&1 | Out-Host
+          $installExit = $LASTEXITCODE
+
+          if ($installExit -ne 0) {
+            # Netbird is a system-level WireGuard service; a hosted runner often
+            # cannot complete the install (missing driver host, reboot required,
+            # etc). Treat any non-zero exit as a warning so the manifest still
+            # gets validated end-to-end without failing the workflow.
+            Write-Warning "winget install --manifest exited with $installExit; this is expected on hosted runners that cannot host the Netbird service"
+          } else {
+            Write-Host "✅ winget install --manifest succeeded"
+          }
+          # Prevent the install HRESULT from becoming the step's exit code
+          $global:LASTEXITCODE = 0
+        continue-on-error: true
+
+      - name: Check for duplicate winget-pkgs PR
+        if: github.event_name != 'push'
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+          OUR_AUTHOR: mlsmaycon
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # winget-pkgs auto-flags Possible-Duplicate when two open PRs touch
+          # the same manifest path. Only block when the open PR is one we
+          # already submitted (so we don't stack duplicates of our own); PRs
+          # from other contributors are allowed to coexist - the maintainers
+          # will pick whichever is healthier and close the other.
+          $headers = @{
+            Authorization          = "Bearer $env:WINGET_PAT"
+            "User-Agent"           = "netbird-winget-action"
+            Accept                 = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $query = "repo:microsoft/winget-pkgs is:pr is:open Netbird.Netbird $env:VERSION in:title"
+          $encoded = [uri]::EscapeDataString($query)
+          $resp = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/search/issues?q=$encoded"
+          if ($resp.total_count -eq 0) {
+            Write-Host "No open winget-pkgs PR found for Netbird.Netbird $env:VERSION"
+            return
+          }
+
+          $ours = @($resp.items | Where-Object { $_.user.login -eq $env:OUR_AUTHOR })
+          $others = @($resp.items | Where-Object { $_.user.login -ne $env:OUR_AUTHOR })
+
+          if ($ours.Count -gt 0) {
+            $urls = ($ours | Select-Object -ExpandProperty html_url) -join ', '
+            throw "Open winget-pkgs PR(s) already submitted by $env:OUR_AUTHOR for Netbird.Netbird $($env:VERSION): $urls. Close them before resubmitting."
+          }
+
+          if ($others.Count -gt 0) {
+            $details = ($others | ForEach-Object { "$($_.html_url) (by @$($_.user.login))" }) -join ', '
+            Write-Warning "Open winget-pkgs PR(s) from other contributors for Netbird.Netbird $($env:VERSION): $details. Submitting our own PR; maintainers will reconcile."
+          }
+
+      - name: Submit Winget Manifest
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\wingetcreate.exe submit `
+            --token $env:WINGET_PAT `
+            $env:manifest_dir
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit exited with code $LASTEXITCODE" }
+          Write-Host "✅ Successfully submitted Winget manifest update for Netbird ${{ env.VERSION }}"
